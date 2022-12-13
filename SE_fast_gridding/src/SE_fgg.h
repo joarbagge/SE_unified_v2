@@ -1,0 +1,314 @@
+#ifndef __SE_FGG_H
+#define __SE_FGG_H
+
+// System includes
+#include "math.h"
+#include <sys/time.h>
+#include "x86intrin.h"
+
+// Consttants and indexing 
+#define PI 3.14159265358979323846
+#define FGG_INF 1.79769e+308
+
+#define __IDX3_CMAJ(II,IJ,IK,N1,N2) ( (II)+(IJ)*(N1)+(IK)*(N1)*(N2) )
+#define __IDX3_RMAJ(II,IJ,IK,N2,N3) ( (II)*(N2)*(N3)+(IJ)*(N3)+(IK) )
+
+// Select periodicty: must give -D<...> to compiler
+#ifdef THREE_PERIODIC
+#define __FGG_EXPA fgg_expansion_3p
+#ifdef FORCE
+#define __FGG_EXPA_FORCE fgg_expansion_3p_force
+#endif
+#define __FGG_INDEX fgg_index_3p
+#define PER_STR "3P"
+#endif
+
+#ifdef TWO_PERIODIC
+#define __FGG_EXPA fgg_expansion_2p
+#ifdef FORCE
+#define __FGG_EXPA_FORCE fgg_expansion_2p_force
+#endif
+#define __FGG_INDEX fgg_index_2p
+#define PER_STR "2P"
+#endif
+
+#ifdef ONE_PERIODIC
+#define __FGG_EXPA fgg_expansion_1p
+#ifdef FORCE
+#define __FGG_EXPA_FORCE fgg_expansion_1p_force
+#endif
+#define __FGG_INDEX fgg_index_1p
+#define PER_STR "1P"
+#endif
+
+// Specific includes and defines for MEX-file compilation
+#ifdef MATLAB_MEX_FILE
+#include "mex.h"
+#define __MALLOC malloc
+#define __PRINTF mexPrintf
+#define __FREE free
+#define __IDX __IDX3_CMAJ
+#else
+#include <stdlib.h>
+#include <stdio.h>
+#define __MALLOC malloc
+#define __PRINTF printf
+#define __FREE free
+#define __IDX __IDX3_RMAJ
+#endif
+#include "SE_fg_windows.h"
+
+// Malloc with 32 or 16-byte alignment (from intrinsics library)
+#ifdef __AVX__
+#define MEM_ALIGNED __attribute__((aligned(32)))
+#define SE_FGG_MALLOC(sz) _mm_malloc((sz),32)
+#define SE_FGG_FREE(sz) _mm_free((sz))
+#else
+#define MEM_ALIGNED __attribute__((aligned(16)))
+#define SE_FGG_MALLOC(sz) _mm_malloc((sz),16)
+#define SE_FGG_FREE(sz) _mm_free((sz))
+#endif
+
+// Print compile-time messages about which kernels will be used
+#ifdef __AVX__
+#if defined(__FMA__) && defined(__AVX2__)
+#define AVX_FMA
+//#pragma message ("Compiling vectorized kernels with AVX and FMA instructions.")
+#else
+//#pragma message ("Compiling vectorized kernels with AVX instructions (no FMA).")
+#endif
+#else
+//#pragma message ("Compiling vectorized kernels with SSE instructions.")
+#endif
+
+// display debug messages in the SSE dispatcher
+// only master thread prints when threaded
+#ifdef VERBOSE
+#ifdef _OPENMP
+#define __DISPATCHER_MSG(s) _Pragma("omp master") \
+    __PRINTF(s)
+#else
+#define __DISPATCHER_MSG(s) __PRINTF(s)
+#endif
+#else
+#define __DISPATCHER_MSG(s) {}
+/* #define __DISPATCHER_MSG(s) _Pragma("omp master") \ */
+/*     __PRINTF(s) */
+#endif
+
+static inline int is_odd(int p)
+// test if interger is odd or even
+{
+    return p&1;
+}
+static inline int isnot_div_by_4(int p)
+{
+   return p&3;
+}
+
+// Return half of gaussian width:
+//    q = (p-1)/2 if p is odd
+//    q =  p/2    if p is even
+static inline int half(int p)
+{
+    return (is_odd(p) ? (p-1)/2 : p/2);
+}
+
+// -----------------------------------------------------------------------------
+// vector index mod, e.g. for double x[6], x[7] --(vmod(7,6))--> x[1] 
+static inline int vmod(int i, int N)
+{
+    if(i>=0)
+	return i%N;
+
+    int k = -i/N;
+    i = i + (k+1)*N;
+    return i % N;
+}
+
+// Temporary, or auxillary arrays
+typedef struct
+{
+  double* H;
+  double* zs;
+  
+  double* zx;
+  double* zy;
+  double* zz;
+  int* idx;
+  
+  // extra space to compute the force
+  double* zfx;
+  double* zfy;
+  double* zfz;
+  
+  int free_zs;
+  int free_fgg_expa;
+  
+} SE_FGG_work;
+
+// FGG parameters
+typedef struct
+{
+    int N; // number of particles
+    int P;
+    int P_half;
+    int P_eval_window; // effective P used when evaluating the window function
+    int dims[3];
+    int npdims[3];
+    double c;
+    double d;
+    double h;
+
+    // z-dir offset in 2P (both windows) and 1P with Gaussian window.
+    // y-dir offset in 1P with Kaiser window.
+    double a;
+    // y-dir offset in 1P with Gaussian window and
+    // z-dir offset in 1P with Kaiser window.
+    double b;
+    double beta;
+    KaiserlikeWindow window;
+    KaiserlikeWindow window_deriv; // used to compute forces
+    int use_polynomial_window;
+    int polynomial_degree;
+} SE_FGG_params;
+
+typedef struct
+{
+    int idx_on_grid, idx_in_array; 
+} idx_reorder_t;
+
+// Particle positions and charges
+typedef struct
+{
+    double* x;
+    double* q;
+    double* phi;
+
+} SE_state;
+
+
+
+
+// Fill parameter struct
+void SE_FGG_pack_params(SE_FGG_params*, int, int, int, int, int, 
+			double, double);
+void SE2P_FGG_pack_params(SE_FGG_params*, int, int, int, int, int, 
+			  double, double, double);
+
+// Allocate workspace (malloc)
+void SE_FGG_allocate_workspace(SE_FGG_work*, const SE_FGG_params*, int, int);
+void SE_FGG_allocate_workspace_SSE_force(SE_FGG_work*, const SE_FGG_params*, int, int);
+double* SE_FGG_allocate_grid(const SE_FGG_params*);
+double* SE_FGG_allocate_vec(int);
+
+// Free workspace (free)
+void SE_FGG_free_workspace(SE_FGG_work*);
+void SE_FGG_free_workspace_SSE_force(SE_FGG_work*);
+
+// Particles to grid Potential
+void SE_FGG_grid(SE_FGG_work*, const SE_state*, const SE_FGG_params*);
+void SE_FGG_grid_split_SSE_dispatch(SE_FGG_work*, const SE_state*, const SE_FGG_params*);
+void SE_FGG_grid_split(SE_FGG_work*, const SE_state*, const SE_FGG_params*);
+void SE_FGG_grid_split_SSE(SE_FGG_work*, const SE_state*, const SE_FGG_params*);
+void SE_FGG_grid_split_SSE_u8(SE_FGG_work*, const SE_state*, const SE_FGG_params*);
+void SE_FGG_grid_split_SSE_P16(SE_FGG_work*, const SE_state*, const SE_FGG_params*);
+#ifdef __AVX__
+void SE_FGG_grid_split_AVX_dispatch(SE_FGG_work*, const SE_state*, const SE_FGG_params*);
+void SE_FGG_grid_split_AVX(SE_FGG_work*, const SE_state*, const SE_FGG_params*);
+void SE_FGG_grid_split_AVX_P16(SE_FGG_work*, const SE_state*, const SE_FGG_params*);
+void SE_FGG_grid_split_AVX_P8(SE_FGG_work*, const SE_state*, const SE_FGG_params*);
+void SE_FGG_grid_split_AVX_u8(SE_FGG_work*, const SE_state*, const SE_FGG_params*);
+#endif
+
+// particles to grid force
+void SE_FGG_grid_split_SSE_dispatch_force(SE_FGG_work*, const SE_state*, const SE_FGG_params*);
+void SE_FGG_grid_split_force(SE_FGG_work*, const SE_state*, const SE_FGG_params*);
+void SE_FGG_grid_split_SSE_force(SE_FGG_work*, const SE_state*, const SE_FGG_params*);
+void SE_FGG_grid_split_SSE_u8_force(SE_FGG_work*, const SE_state*, const SE_FGG_params*);
+void SE_FGG_grid_split_SSE_P16_force(SE_FGG_work*, const SE_state*, const SE_FGG_params*);
+#ifdef __AVX__
+void SE_FGG_grid_split_AVX_dispatch_force(SE_FGG_work*, const SE_state*, const SE_FGG_params*);
+void SE_FGG_grid_split_AVX_P16_force(SE_FGG_work*, const SE_state*, const SE_FGG_params*);
+void SE_FGG_grid_split_AVX_P8_force(SE_FGG_work*, const SE_state*, const SE_FGG_params*);
+void SE_FGG_grid_split_AVX_u8_force(SE_FGG_work*, const SE_state*, const SE_FGG_params*);
+void SE_FGG_grid_split_AVX_force(SE_FGG_work*, const SE_state*, const SE_FGG_params*);
+#endif
+
+// Compute all FGG expansion vectors
+void SE_FGG_expand_all(SE_FGG_work*, const SE_state*, const SE_FGG_params*);
+void SE_FGG_expand_all_force(SE_FGG_work*, const SE_state*, const SE_FGG_params*);
+
+// Grid to particles Potential
+void SE_FGG_int(double*, const SE_FGG_work*, const SE_state*, const SE_FGG_params*);
+void SE_FGG_int_force(double*, const SE_FGG_work*, SE_state*, const SE_FGG_params*);
+void SE_FGG_int_split_SSE_dispatch(double*, const SE_FGG_work*, const SE_FGG_params*);
+void SE_FGG_int_split(double*, const SE_FGG_work*, const SE_FGG_params*);
+void SE_FGG_int_split_SSE(double*, const SE_FGG_work*, const SE_FGG_params*);
+void SE_FGG_int_split_SSE_u8(double*, const SE_FGG_work*, const SE_FGG_params*);
+void SE_FGG_int_split_SSE_P8(double*, const SE_FGG_work*, const SE_FGG_params*);
+void SE_FGG_int_split_SSE_P16(double*, const SE_FGG_work*, const SE_FGG_params*);
+
+// Grid to particles Force
+#ifdef __AVX__
+void SE_FGG_int_split_AVX_dispatch(double*, const SE_FGG_work*, const SE_FGG_params*);
+void SE_FGG_int_split_AVX(double*, const SE_FGG_work*, const SE_FGG_params*);
+void SE_FGG_int_split_AVX_P8(double*, const SE_FGG_work*, const SE_FGG_params*);
+void SE_FGG_int_split_AVX_P16(double*, const SE_FGG_work*, const SE_FGG_params*);
+void SE_FGG_int_split_AVX_u8(double*, const SE_FGG_work*, const SE_FGG_params*);
+#endif
+
+// Grid to particles Potential
+void SE_FGG_int_split_SSE_dispatch_force(double*, SE_state*, const SE_FGG_work*, const SE_FGG_params*);
+void SE_FGG_int_split_force(double*, SE_state*, const SE_FGG_work*, const SE_FGG_params*);
+void SE_FGG_int_split_SSE_force(double*, SE_state*, const SE_FGG_work*, const SE_FGG_params*);
+void SE_FGG_int_split_SSE_P8_force(double*, SE_state*, const SE_FGG_work*, const SE_FGG_params*);
+void SE_FGG_int_split_SSE_u8_force(double*, SE_state*, const SE_FGG_work*, const SE_FGG_params*);
+void SE_FGG_int_split_SSE_P16_force(double*, SE_state*, const SE_FGG_work*, const SE_FGG_params*);
+#ifdef __AVX__
+void SE_FGG_int_split_AVX_dispatch_force(double*, SE_state*, const SE_FGG_work*, const SE_FGG_params*);
+void SE_FGG_int_split_AVX_P16_force(double*, SE_state*, const SE_FGG_work*, const SE_FGG_params*);
+void SE_FGG_int_split_AVX_P8_force(double*, SE_state*, const SE_FGG_work*, const SE_FGG_params*);
+void SE_FGG_int_split_AVX_u8_force(double*, SE_state*, const SE_FGG_work*, const SE_FGG_params*);
+void SE_FGG_int_split_AVX_force(double*, SE_state*, const SE_FGG_work*, const SE_FGG_params*);
+#endif
+
+// Static Gaussian on P^3-grid
+void SE_FGG_base_gaussian(SE_FGG_work*, const SE_FGG_params*);
+
+// calculate offsets in 3periodic
+//static inline void fgg_offset_3p(const double *, const SE_FGG_params*, double *,   int *);
+
+// Wrap function to produce periodicity
+void SE_FGG_wrap_fcn(double*, const SE_FGG_work*, const SE_FGG_params*);
+void SE2P_FGG_wrap_fcn(double*, const SE_FGG_work*, const SE_FGG_params*);
+void SE1P_FGG_wrap_fcn(double*, const SE_FGG_work*, const SE_FGG_params*);
+
+// Extend periodic function
+void SE_FGG_extend_fcn(SE_FGG_work*, const double*, const SE_FGG_params*);
+void SE2P_FGG_extend_fcn(SE_FGG_work*, const double*, const SE_FGG_params*);
+void SE1P_FGG_extend_fcn(SE_FGG_work*, const double*, const SE_FGG_params*);
+
+// Randomize positions and charges (malloc)
+void SE_init_system(SE_state*, const SE_FGG_params*);
+void SE_init_unit_system(SE_state*, const SE_FGG_params*);
+
+// Free particles and charges (free)
+void SE_free_system(SE_state*);
+
+// Retrun time in seconds
+double SE_gettime(void);
+
+// Return product of elements in integer triplet
+int SE_prod3(const int[3]);
+
+// Set first N elements of array to floating-point zero
+void SE_fp_set_zero(double*, int);
+
+// Reorder particles according to closest grid point
+void SE_FGG_reorder_system(SE_state*, const SE_FGG_work*, const SE_FGG_params*);
+
+// calculate energy
+double calc_energy(SE_state, int);
+
+#endif
