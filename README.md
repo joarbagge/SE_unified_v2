@@ -22,3 +22,11 @@ with the path replaced by the path to the Matlab installation.
 ## Demo scripts
 
 Demo scripts are available in the ``SE{3,2,1,0}P`` directories.
+
+## License
+
+This package is released under the MIT License, see the [LICENSE](./LICENSE) file for details.
+
+## See also
+
+See also the previous version of this package: <https://github.com/ludvigak/SE_unified>
