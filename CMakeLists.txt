@@ -61,6 +61,7 @@ endif()
 # Add modules with MEX to be built
 add_subdirectory("${PROJECT_SOURCE_DIR}/SE_fast_gridding")
 add_subdirectory("${PROJECT_SOURCE_DIR}/SE_direct/mex")
+add_subdirectory("${PROJECT_SOURCE_DIR}/SE_common/mex")
 add_subdirectory("${PROJECT_SOURCE_DIR}/SE3P/mex")
 add_subdirectory("${PROJECT_SOURCE_DIR}/SE2P/mex")
 add_subdirectory("${PROJECT_SOURCE_DIR}/SE1P/mex")
