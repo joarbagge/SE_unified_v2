@@ -27,6 +27,18 @@ Demo scripts are available in the ``SE{3,2,1,0}P`` directories.
 
 This package is released under the MIT License, see the [LICENSE](./LICENSE) file for details.
 
+## Contributors
+
+- Dag Lindbo
+- Anna-Karin Tornberg
+- Ludvig af Klinteberg
+- Davood Saffar Shamshirgar
+- Joar Bagge
+
+## Research papers
+
+A list of papers is found in the [PAPERS.md](./PAPERS.md) file.
+
 ## See also
 
 See also the previous version of this package: <https://github.com/ludvigak/SE_unified>
